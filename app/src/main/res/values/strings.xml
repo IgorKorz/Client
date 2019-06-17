@@ -1,0 +1,11 @@
+<resources>
+    <string name="app_name">AR Museum</string>
+    <string name="intro_msg">Hello, world!</string>
+    <string name="description_info">KIS(s)</string>
+    <string name="picture">Picture</string>
+    <string name="request_permission">This app needs camera permission</string>
+    <string name="ok">OK</string>
+    <string name="camera_error">This device does not support Camera2 API.</string>
+    <string name="cancel">Cancel</string>
+    <string name="clear">Clear</string>
+</resources>
