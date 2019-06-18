@@ -20,9 +20,12 @@ import android.hardware.camera2.CameraManager;
 import android.hardware.camera2.CaptureRequest;
 import android.hardware.camera2.params.StreamConfigurationMap;
 import android.media.ImageReader;
+import android.net.wifi.WifiManager;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.text.format.Formatter;
 import android.util.Log;
 import android.util.Size;
 import android.util.SparseIntArray;
@@ -34,6 +37,7 @@ import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
+import androidx.annotation.RequiresApi;
 import androidx.fragment.app.Fragment;
 
 import org.opencv.android.BaseLoaderCallback;
@@ -60,9 +64,12 @@ import ru.ksu.edu.museum.mobile.client.capture.listener.ImageAvailableListener;
 import ru.ksu.edu.museum.mobile.client.network.UserClient;
 import ru.ksu.edu.museum.mobile.client.opengl.OpenGLSurfaceView;
 
+import static android.Manifest.permission.ACCESS_NETWORK_STATE;
+import static android.Manifest.permission.ACCESS_WIFI_STATE;
 import static android.Manifest.permission.CAMERA;
+import static android.Manifest.permission.INTERNET;
 
-public class CameraFragment extends Fragment implements View.OnClickListener {
+public class CameraFragment extends Fragment {
     public static final int REQUEST_CAMERA_PERMISSION = 1;
 
     //region private constants
@@ -112,6 +119,8 @@ public class CameraFragment extends Fragment implements View.OnClickListener {
     private Semaphore cameraOpenCloseLock = new Semaphore(1);
     private CameraCaptureListener captureCallback;
     private BaseLoaderCallback loaderCallback = new LoaderCallback(getContext());
+    private Thread takePictureThread;
+    private PictureTaker pictureTaker = new PictureTaker();
     //endregion
 
     private CameraFragment() {
@@ -126,16 +135,16 @@ public class CameraFragment extends Fragment implements View.OnClickListener {
     }
 
     //region override methods
-    @Override
-    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions,
-                                           @NonNull int[] grantResults) {
-        if (requestCode == REQUEST_CAMERA_PERMISSION &&
-                (grantResults.length != 1
-                        || grantResults[0] != PackageManager.PERMISSION_GRANTED)) {
-            ErrorDialog.newInstance(getString(R.string.request_permission))
-                    .show(getChildFragmentManager(), FRAGMENT_DIALOG);
-        }
-    }
+//    @Override
+//    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions,
+//                                           @NonNull int[] grantResults) {
+//        if (requestCode == REQUEST_CAMERA_PERMISSION &&
+//                (grantResults.length != 1
+//                        || grantResults[0] != PackageManager.PERMISSION_GRANTED)) {
+//            ErrorDialog.newInstance(getString(R.string.request_permission))
+//                    .show(getChildFragmentManager(), FRAGMENT_DIALOG);
+//        }
+//    }
 
     @Override
     public void onCreate(@Nullable Bundle savedInstanceState) {
@@ -161,10 +170,6 @@ public class CameraFragment extends Fragment implements View.OnClickListener {
     public void onViewCreated(@NonNull View view, @Nullable Bundle savedInstanceState) {
         textureView = view.findViewById(R.id.texture);
         surfaceView = view.findViewById(R.id.opengl_texture);
-
-        view.findViewById(R.id.picture).setOnClickListener(this);
-        view.findViewById(R.id.info).setOnClickListener(this);
-        view.findViewById(R.id.clear).setOnClickListener(this);
     }
 
     @Override
@@ -181,9 +186,13 @@ public class CameraFragment extends Fragment implements View.OnClickListener {
         captureCallback = new CameraCaptureListener(this);
         onImageAvailableListener = new ImageAvailableListener(this);
         Resources res = getActivity().getResources();
+        WifiManager wifiManager = (WifiManager) getActivity().getApplicationContext()
+                .getSystemService(Context.WIFI_SERVICE);
+        String ip = Formatter.formatIpAddress(wifiManager.getConnectionInfo().getIpAddress());
         userClient = new UserClient("admin",
                 res.getString(R.string.server_host),
-                res.getInteger(R.integer.server_port));
+                res.getInteger(R.integer.server_port),
+                ip);
         userClient.run();
     }
 
@@ -209,38 +218,9 @@ public class CameraFragment extends Fragment implements View.OnClickListener {
     @Override
     public void onPause() {
         closeCamera();
-
         stopBackgroundThread();
 
         super.onPause();
-    }
-
-    @Override
-    public void onClick(View view) {
-        switch (view.getId()) {
-            case R.id.picture: {
-                takePicture();
-
-                break;
-            }
-
-            case R.id.info: {
-                Activity activity = getActivity();
-
-                if (activity != null) {
-                    new AlertDialog.Builder(activity)
-                            .setMessage(AD_INFO_MSG)
-                            .setPositiveButton(R.string.ok, null)
-                            .show();
-                }
-
-                break;
-            }
-
-            case R.id.clear: {
-                surfaceView.clear();
-            }
-        }
     }
     //endregion
 
@@ -256,14 +236,6 @@ public class CameraFragment extends Fragment implements View.OnClickListener {
     public void setCameraDevice(CameraDevice cameraDevice) {
         this.cameraDevice = cameraDevice;
     }
-
-    public Handler getBackgroundHandler() {
-        return backgroundHandler;
-    }
-
-//    public File getFile() {
-//        return file;
-//    }
 
     public CaptureRequest.Builder getPreviewRequestBuilder() {
         return previewRequestBuilder;
@@ -484,8 +456,9 @@ public class CameraFragment extends Fragment implements View.OnClickListener {
         return userClient;
     }
 
-    public void draw(int[] ids, List<PointF[]> corners) {
-        surfaceView.draw(ids, corners);
+    public void draw(int[] ids, PointF[][] corners, double widthScale, double heightScale) {
+        getActivity().runOnUiThread(surfaceView.getDrawer(ids, corners, widthScale, heightScale,
+                getActivity().getResources()));
     }
 
     private static Size ChooseOptimalSize(Size[] choices, int textureViewWidth,
@@ -524,7 +497,12 @@ public class CameraFragment extends Fragment implements View.OnClickListener {
         if (shouldShowRequestPermissionRationale(permission)) {
             new ConfirmationDialog().show(getChildFragmentManager(), FRAGMENT_DIALOG);
         } else {
-            requestPermissions(new String[]{permission}, REQUEST_CAMERA_PERMISSION);
+            requestPermissions(new String[] {
+                    permission,
+                    INTERNET,
+                    ACCESS_WIFI_STATE,
+                    ACCESS_NETWORK_STATE
+            }, REQUEST_CAMERA_PERMISSION);
         }
     }
 
@@ -652,12 +630,19 @@ public class CameraFragment extends Fragment implements View.OnClickListener {
         backgroundThread.start();
 
         backgroundHandler = new Handler(backgroundThread.getLooper());
+
+        pictureTaker.interrupted = false;
+        takePictureThread = new Thread(pictureTaker);
+        takePictureThread.start();
     }
 
     private void stopBackgroundThread() {
         backgroundThread.quitSafely();
 
         try {
+            pictureTaker.interrupted = true;
+            takePictureThread.join();
+            takePictureThread = null;
             backgroundThread.join();
             backgroundThread = null;
             backgroundHandler = null;
@@ -671,20 +656,33 @@ public class CameraFragment extends Fragment implements View.OnClickListener {
     }
 
     private void lockFocus() {
-        try {
-            previewRequestBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER,
-                    CaptureRequest.CONTROL_AF_TRIGGER_START);
+        if (captureSession != null) {
+            try {
+                previewRequestBuilder.set(CaptureRequest.CONTROL_AF_TRIGGER,
+                        CaptureRequest.CONTROL_AF_TRIGGER_START);
 
-            State = CameraState.WAITING_LOCK;
+                State = CameraState.WAITING_LOCK;
 
-            captureSession.capture(previewRequestBuilder.build(), captureCallback,
-                    backgroundHandler);
-        } catch (CameraAccessException e) {
-            Log.e(TAG, e.getMessage());
+                captureSession.capture(previewRequestBuilder.build(), captureCallback,
+                        backgroundHandler);
+            } catch (CameraAccessException e) {
+                Log.e(TAG, e.getMessage());
+            }
         }
     }
 
     private int getOrientation(int rotation) {
         return (ORIENTATIONS.get(rotation) + sensorOrientation + 270) % 360;
+    }
+
+    private class PictureTaker implements Runnable {
+        private boolean interrupted = false;
+
+        @Override
+        public void run() {
+            while (!interrupted) {
+                takePicture();
+            }
+        }
     }
 }

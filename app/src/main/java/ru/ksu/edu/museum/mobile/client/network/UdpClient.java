@@ -5,16 +5,24 @@ import android.os.AsyncTask;
 import java.io.IOException;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
-import java.net.SocketAddress;
+import java.net.InetAddress;
 import java.util.concurrent.ExecutionException;
 
 public class UdpClient implements NetworkClient {
+    private static final int BUFFER_SIZE = 2500;
     private static final int MAX_DATA_SIZE = 65507;
 
-    private SocketAddress serverSocketAddress;
-
+    private InetAddress serverAddress;
+    private InetAddress clientAddress;
+    private int clientPort;
+    private int serverPort;
     private UdpSendAsyncTask sendTask;
     private UdpReceiveAsyncTask receiveTask;
+
+    public UdpClient(InetAddress clientAddress, int port) {
+        this.clientAddress = clientAddress;
+        this.clientPort = port;
+    }
 
     @Override
     public void open() {
@@ -22,7 +30,11 @@ public class UdpClient implements NetworkClient {
 
     @Override
     public void close() {
+    }
 
+    public void setServerAddress(InetAddress serverAddress, int port) {
+        this.serverAddress = serverAddress;
+        this.serverPort = port;
     }
 
     @Override
@@ -36,7 +48,11 @@ public class UdpClient implements NetworkClient {
         receiveTask = new UdpReceiveAsyncTask();
 
         try {
-            return receiveTask.executeOnExecutor(AsyncTask.SERIAL_EXECUTOR).get().data;
+            DataHolder dataHolder = receiveTask.executeOnExecutor(AsyncTask.SERIAL_EXECUTOR).get();
+
+            if (dataHolder != null) {
+                return dataHolder.data;
+            }
         } catch (ExecutionException | InterruptedException e) {
             e.printStackTrace();
         }
@@ -44,42 +60,35 @@ public class UdpClient implements NetworkClient {
         return null;
     }
 
-    public void setServerSocketAddress(SocketAddress serverSocketAddress) {
-        this.serverSocketAddress = serverSocketAddress;
-    }
-
     private class UdpReceiveAsyncTask extends AsyncTask<Void, Void, DataHolder> {
-
         @Override
         protected DataHolder doInBackground(Void... voids) {
-            DataHolder result = null;
+            try {
+                DatagramSocket socket = new DatagramSocket(clientPort);
+                byte[] buffer = new byte[BUFFER_SIZE];
+                DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
+                socket.setBroadcast(true);
+                socket.receive(packet);
 
-            try (DatagramSocket receivingSocket = new DatagramSocket(serverSocketAddress)) {
-                byte[] data = new byte[MAX_DATA_SIZE];
-                DatagramPacket packet = new DatagramPacket(data, data.length);
-                receivingSocket.receive(packet);
-
-                result = new DataHolder(packet.getData());
+                return new DataHolder(packet.getData());
             } catch (IOException e) {
                 e.printStackTrace();
             }
 
-            return result;
+            return null;
         }
     }
 
     private class UdpSendAsyncTask extends AsyncTask<DataHolder, Void, Void> {
         @Override
         protected Void doInBackground(DataHolder... dataHolders) {
-            try (DatagramSocket sendingSocket = new DatagramSocket(serverSocketAddress)) {
+            try (DatagramSocket sendingSocket = new DatagramSocket()) {
                 byte[] data = dataHolders[0].data;
 
-                DatagramPacket packet = new DatagramPacket(data, data.length, serverSocketAddress);
-
-                for (int i = 0; i < data.length / MAX_DATA_SIZE; i++) {
-                    packet.setData(data, i * MAX_DATA_SIZE, MAX_DATA_SIZE);
-                    sendingSocket.send(packet);
-                }
+                DatagramPacket packet = new DatagramPacket(data, data.length, serverAddress, serverPort);
+                sendingSocket.setBroadcast(true);
+                packet.setData(data, 0, Math.min(data.length, MAX_DATA_SIZE));
+                sendingSocket.send(packet);
             } catch (IOException e) {
                 e.printStackTrace();
             }
