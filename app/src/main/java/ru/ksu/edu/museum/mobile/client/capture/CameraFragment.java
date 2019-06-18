@@ -440,7 +440,7 @@ public class CameraFragment extends Fragment {
     public void setAutoFlash(CaptureRequest.Builder requestBuilder) {
         if (flashSupported) {
             requestBuilder.set(CaptureRequest.CONTROL_AE_MODE,
-                    CaptureRequest.CONTROL_AE_MODE_ON_AUTO_FLASH);
+                    CaptureRequest.CONTROL_AE_MODE_OFF);
         }
     }
 
